@@ -1,0 +1,3 @@
+PyMuPDF==1.23.7
+ollama
+ruff==0.3.4 # Linter/Formatter opcional pero recomendado
