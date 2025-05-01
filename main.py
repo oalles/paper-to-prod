@@ -12,8 +12,9 @@ from tools.filesystem_tool import FileSystemTool
 from tools.ollama_client import OllamaClient
 import logging
 from utils.session import create_session_directory
+from utils.logging import setup_logger
 
-def setup_logger(log_dir: str):
+def setup_logger(log_dir: str, external_hook=None):
     """
     Sets up a logger for the system, writing to a file in the session directory.
     """
@@ -41,20 +42,23 @@ def setup_logger(log_dir: str):
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
 
+        # Add external hook if provided
+        if external_hook:
+            logger.addHandler(external_hook)
+
     return logger
 
-def setup_environment(prompt: str, paper_path: str):
+def setup_environment(prompt: str, paper_path: str, session_path: str):
     """
-    Prepare the working directory, logger, and shared tools (FileSystemTool, OllamaClient).
+    Prepara el entorno usando una carpeta de sesión ya creada.
     """
     print("🚀 Setting up environment...")
-    session_path = create_session_directory()
     logger = setup_logger(session_path)
     logger.info(f"Session directory created: {session_path}")
     fs_tool = FileSystemTool(session_path)
     ollama_client = OllamaClient()
     logger.info("Environment setup complete.")
-    return session_path, fs_tool, ollama_client, logger
+    return fs_tool, ollama_client, logger
 
 def orchestrate_agents(prompt: str, paper_path: str, session_path: str, fs_tool: FileSystemTool, llm_client: OllamaClient, logger: logging.Logger):
     """
@@ -143,61 +147,97 @@ def validate_input_files(paper_path: str):
     """
     Valida que el archivo de entrada exista, sea un PDF y muestra errores claros.
     """
-    paper_file = Path(paper_path).expanduser().resolve()
-    print(f"🔍 Buscando archivo: '{paper_file}'")
-    if not paper_file.exists():
-        print(f"❌ Error: No se encontró el archivo en '{paper_file}'")
-        print("Sugerencias:")
-        print(" - Verifica que la ruta sea correcta y que no tenga errores tipográficos.")
-        print(" - Si la ruta contiene espacios, usa comillas al pasar el argumento.")
-        print(" - Usa 'make debug-file PAPER=\"<ruta>\"' para comprobar si Makefile ve el archivo.")
+    from PyPDF2 import PdfReader
+    if not Path(paper_path).is_file():
+        print(f"❌ El archivo especificado no existe: {paper_path}")
         sys.exit(1)
-    if not paper_file.is_file():
-        print(f"❌ Error: '{paper_file}' no es un archivo válido.")
+    try:
+        PdfReader(paper_path)
+    except Exception as e:
+        print(f"❌ El archivo no es un PDF válido o está corrupto: {paper_path}")
+        print(f"Detalles: {e}")
         sys.exit(1)
-    if paper_file.suffix.lower() != ".pdf":
-        print(f"❌ Error: '{paper_file}' no es un archivo PDF válido.")
-        sys.exit(1)
-    print(f"✅ Archivo de entrada '{paper_file}' es válido.")
 
-def main(prompt: str, paper_path: str):
+def main(prompt: str, paper_path: str, use_crew: bool = False, external_log_hook=None, session_path: str = None):
     print("Starting MultiAgent Product Synthesizer...")
-    validate_input_files(paper_path)
-    session_path, fs_tool, llm_client, logger = setup_environment(prompt, paper_path)
-    logger.info("Main process started.")
+    try:
+        validate_input_files(paper_path)
+    except Exception as e:
+        print(f"❌ Error validando el archivo de entrada: {e}")
+        if 'logger' in locals():
+            logger.error(f"Error validando el archivo de entrada: {e}")
+        sys.exit(1)
+
+    # Crear la carpeta de sesión solo si no se ha proporcionado
+    if session_path is None:
+        session_path = create_session_directory()
+    print(f"Workspace de sesión: {session_path}")
+
+    logger = setup_logger(session_path, external_hook=external_log_hook)
+    logger.info("Sesión iniciada.")
+    logger.info(f"Prompt: {prompt}")
+    logger.info(f"Paper: {paper_path}")
 
     try:
-        evaluation_report = orchestrate_agents(prompt, paper_path, session_path, fs_tool, llm_client, logger)
+        if use_crew:
+            # CrewAI siempre disponible, ejecuta directamente
+            print("🚀 Ejecutando flujo CrewAI...")
+            logger.info("Ejecutando flujo CrewAI.")
+            try:
+                from crew import crew
+                crew.run(session_path=session_path, prompt=prompt, paper_path=paper_path, logger=logger)
+            except Exception as e:
+                print(f"❌ Error durante la ejecución CrewAI: {e}")
+                logger.error(f"Error durante la ejecución CrewAI: {e}")
+                sys.exit(1)
+            print(f"Flujo CrewAI completado. Revisa la carpeta '{session_path}/output/' para los artefactos generados.")
+            logger.info("Flujo CrewAI completado.")
+            return
 
-        logger.info("\n\n=========================================")
-        logger.info(f"✅ Workflow Complete! Check outputs in: {session_path}")
-        logger.info("=========================================")
-        if evaluation_report:
-            logger.info("\n📊 Evaluation Summary:\n")
-            for line in evaluation_report.splitlines():
-                logger.info(line)
+        # Usar la misma carpeta de sesión para todo
+        fs_tool, llm_client, logger = setup_environment(prompt, paper_path, session_path)
+        logger.info("Main process started.")
+
+        try:
+            evaluation_report = orchestrate_agents(prompt, paper_path, session_path, fs_tool, llm_client, logger)
+
+            logger.info("\n\n=========================================")
+            logger.info(f"✅ Workflow Complete! Check outputs in: {session_path}")
             logger.info("=========================================")
-        else:
-            logger.warning("Evaluation report was not generated.")
+            if evaluation_report:
+                logger.info("\n📊 Evaluation Summary:\n")
+                for line in evaluation_report.splitlines():
+                    logger.info(line)
+                logger.info("=========================================")
+            else:
+                logger.warning("Evaluation report was not generated.")
 
+        except Exception as e:
+            if 'logger' in locals():
+                logger.critical(f"🆘 Unhandled exception in main workflow: {e}", exc_info=True)
+            else:
+                print(f"🆘 Critical Error before logger setup: {e}")
+            sys.exit(1)
+        finally:
+            logger.info("MultiAgent Product Synthesizer finished.")
+            print(f"\nOutputs generated in: {session_path}")
     except Exception as e:
+        print(f"❌ Error durante la ejecución: {e}")
         if 'logger' in locals():
-            logger.critical(f"🆘 Unhandled exception in main workflow: {e}", exc_info=True)
-        else:
-            print(f"🆘 Critical Error before logger setup: {e}")
+            logger.error(f"Error durante la ejecución: {e}")
         sys.exit(1)
     finally:
-        logger.info("MultiAgent Product Synthesizer finished.")
-        print(f"\nOutputs generated in: {session_path}")
+        print("✅ Proceso completado.")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("\n❌ Usage: python main.py \"<prompt>\" <path_to_paper.pdf>")
+    if len(sys.argv) < 3 or len(sys.argv) > 4:
+        print("\n❌ Usage: python main.py \"<prompt>\" <path_to_paper.pdf> [--use-crew]")
         print("Example: python main.py \"Generate a web app from this paper\" research/mypaper.pdf")
         sys.exit(1)
 
     user_prompt = sys.argv[1]
     paper_file_path = sys.argv[2]
+    use_crew_flag = len(sys.argv) == 4 and sys.argv[3] == "--use-crew"
 
-    main(user_prompt, paper_file_path)
+    main(user_prompt, paper_file_path, use_crew=use_crew_flag)
 

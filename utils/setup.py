@@ -10,10 +10,12 @@ def ensure_project_structure():
         "tools",
         "utils",
         "workspace",
-        "output" # Although output is within workspace/session, having a root one might be useful later
+        "output",  # Aunque output esté dentro de workspace/session, tener uno en raíz puede ser útil.
+        "tests",   # Añadido para acomodar pruebas
+        "docs"     # Añadido para documentación
     ]
 
-    project_root = Path(__file__).parent.parent # Assumes setup.py is in utils/
+    project_root = Path(__file__).parent.parent  # Asume setup.py está en utils/
     print(f"Project root identified as: {project_root}")
 
     for dir_name in base_dirs:
@@ -25,7 +27,7 @@ def ensure_project_structure():
             # print(f"   ℹ️ Directory already exists: {dir_path.relative_to(project_root)}")
             pass
 
-        # Create __init__.py in Python module directories
+        # Create __init__.py en directorios de módulos de Python
         if dir_name in ["agents", "tools", "utils"]:
             init_file = dir_path / "__init__.py"
             if not init_file.exists():
